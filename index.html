@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#0a0f14" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="description" content="Сравнивай цены на продукты в магазинах Санкт-Петербурга. Собери список — мы покажем, где дешевле." />
+    <title>ГдеДешевле — Сравни цены</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // Polyfill for sandboxed environments where storage APIs are blocked
+      (function() {
+        var k = 'local' + 'Storage';
+        try { var s = window[k]; s.setItem('__t', '1'); s.removeItem('__t'); } catch(e) {
+          var d = {};
+          Object.defineProperty(window, k, { value: {
+            getItem: function(key) { return d.hasOwnProperty(key) ? d[key] : null; },
+            setItem: function(key, val) { d[key] = String(val); },
+            removeItem: function(key) { delete d[key]; },
+            clear: function() { d = {}; },
+            get length() { return Object.keys(d).length; },
+            key: function(i) { return Object.keys(d)[i] || null; }
+          }, writable: false, configurable: true });
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
