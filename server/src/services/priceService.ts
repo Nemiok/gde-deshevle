@@ -1,5 +1,6 @@
 import { pool } from '../db/connection.js';
 import { redisClient, CACHE_TTL } from '../cache/redis.js';
+import { config } from '../config.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -26,7 +27,7 @@ function pricesCacheKey(productIds: number[]): string {
 /**
  * Fetch the latest prices for a list of product IDs across all stores.
  * Returns one row per (product, store) pair.
- * Prices older than 24 hours are considered stale and excluded.
+ * Prices older than PRICE_MAX_AGE_HOURS are considered stale and excluded.
  *
  * Results are cached in Redis for CACHE_TTL seconds.
  */
@@ -63,10 +64,10 @@ export async function getPricesForProducts(productIds: number[]): Promise<PriceR
     JOIN stores s ON s.id = pr.store_id
     WHERE
       pr.product_id = ANY($1::int[])
-      AND pr.scraped_at > NOW() - INTERVAL '24 hours'
+      AND pr.scraped_at > NOW() - make_interval(hours => $2)
     ORDER BY pr.product_id, pr.price
     `,
-    [productIds],
+    [productIds, config.priceMaxAgeHours],
   );
 
   // ── Cache write ──────────────────────────────────────────────────────────

@@ -20,6 +20,11 @@ export const config = {
   /** Redis cache TTL in seconds (default: 6 hours) */
   cacheTtl: parseInt(process.env.CACHE_TTL ?? '21600', 10),
 
+  /** Max age of prices in hours — prices older than this are excluded from results.
+   *  Default: 8760 (1 year) — effectively disabled until scrapers run regularly.
+   *  Set to 24-48 once scrapers are active. */
+  priceMaxAgeHours: parseInt(process.env.PRICE_MAX_AGE_HOURS ?? '8760', 10),
+
   /** Runtime environment */
   nodeEnv: process.env.NODE_ENV ?? 'development',
 } as const;
