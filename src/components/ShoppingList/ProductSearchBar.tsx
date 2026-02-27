@@ -27,16 +27,25 @@ export function ProductSearchBar({ isDark, onAdd, onClose }: Props) {
   }, []);
 
   useEffect(() => {
-    if (query.length < 1) {
+    const trimmedQuery = query.trim();
+    if (trimmedQuery.length < 2) {
       setResults([]);
+      setLoading(false);
       return;
     }
+
     setLoading(true);
     const timer = setTimeout(async () => {
-      const res = await searchProducts(query);
-      setResults(res);
-      setLoading(false);
+      try {
+        const res = await searchProducts(trimmedQuery);
+        setResults(res);
+      } catch {
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
     }, 200);
+
     return () => clearTimeout(timer);
   }, [query]);
 
@@ -115,13 +124,13 @@ export function ProductSearchBar({ isDark, onAdd, onClose }: Props) {
         </div>
       )}
 
-      {!loading && query.length >= 1 && results.length === 0 && (
+      {!loading && query.trim().length >= 2 && results.length === 0 && (
         <div style={{ padding: '10px 14px 14px', textAlign: 'center', color: subColor, fontSize: 14 }}>
           Ничего не найдено
         </div>
       )}
 
-      {!loading && query.length === 0 && (
+      {!loading && query.trim().length < 2 && (
         <div style={{ padding: '4px 14px 12px' }}>
           <div style={{ fontSize: 12, color: subColor, marginBottom: 8 }}>Популярное:</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>

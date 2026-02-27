@@ -1,9 +1,87 @@
 import { Product } from '../models/Product';
 import { Store } from '../models/Store';
-import { ProductPrices } from '../models/PriceRecord';
+import { PriceRecord, ProductPrices } from '../models/PriceRecord';
 
-// --- Mock stores ---
-export const STORES: Store[] = [
+const API_URL = import.meta.env.VITE_API_URL as string | undefined;
+
+const STORE_COLORS: Record<string, string> = {
+  pyaterochka: '#E31E24',
+  magnit: '#D5232F',
+  lenta: '#003DA5',
+  perekrestok: '#00A651',
+  vkusvill: '#8CC63F',
+};
+
+// ─── Real API implementation ─────────────────────────────────────────────────
+
+async function apiSearchProducts(query: string, limit = 10): Promise<Product[]> {
+  const url = `${API_URL}/api/products/search?q=${encodeURIComponent(query)}&limit=${limit}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Search failed: ${res.status}`);
+  const rows: { id: number; name: string; category: string; unit: string }[] = await res.json();
+  return rows.map((r) => ({
+    id: r.id,
+    normalizedName: r.name,
+    category: r.category,
+    unit: r.unit,
+  }));
+}
+
+async function apiFetchPrices(productIds: number[]): Promise<ProductPrices[]> {
+  const url = `${API_URL}/api/prices?productIds=${productIds.join(',')}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Prices failed: ${res.status}`);
+  const rows: {
+    productId: number;
+    storeId: number;
+    storeName: string;
+    storeProductName: string;
+    price: number;
+    pricePerUnit: number | null;
+    scrapedAt: string;
+  }[] = await res.json();
+
+  const grouped = new Map<number, { name: string; prices: PriceRecord[] }>();
+  for (const r of rows) {
+    let entry = grouped.get(r.productId);
+    if (!entry) {
+      entry = { name: r.storeProductName ?? `Product ${r.productId}`, prices: [] };
+      grouped.set(r.productId, entry);
+    }
+    entry.prices.push({
+      productId: r.productId,
+      storeId: r.storeId,
+      storeName: r.storeName,
+      price: Number(r.price),
+      pricePerUnit: r.pricePerUnit ? Number(r.pricePerUnit) : Number(r.price),
+      scrapedAt: r.scrapedAt,
+    });
+  }
+
+  return productIds.map((pid) => ({
+    productId: pid,
+    name: grouped.get(pid)?.name ?? `Product ${pid}`,
+    prices: grouped.get(pid)?.prices ?? [],
+  }));
+}
+
+async function apiFetchStores(): Promise<Store[]> {
+  const res = await fetch(`${API_URL}/api/stores`);
+  if (!res.ok) throw new Error(`Stores failed: ${res.status}`);
+  const rows: { id: number; name: string; slug: string; website_url: string | null }[] =
+    await res.json();
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    slug: r.slug,
+    websiteUrl: r.website_url ?? '',
+    color: STORE_COLORS[r.slug] ?? '#888888',
+  }));
+}
+
+// ─── Mock implementation ─────────────────────────────────────────────────────
+
+const MOCK_STORES: Store[] = [
   { id: 1, name: 'Пятёрочка', slug: 'pyaterochka', websiteUrl: 'https://5ka.ru', color: '#E31E24' },
   { id: 2, name: 'Магнит', slug: 'magnit', websiteUrl: 'https://magnit.ru', color: '#D5232F' },
   { id: 3, name: 'Лента', slug: 'lenta', websiteUrl: 'https://lenta.com', color: '#003DA5' },
@@ -11,8 +89,7 @@ export const STORES: Store[] = [
   { id: 5, name: 'ВкусВилл', slug: 'vkusvill', websiteUrl: 'https://vkusvill.ru', color: '#8CC63F' },
 ];
 
-// --- Mock product catalog ---
-export const PRODUCTS: Product[] = [
+const MOCK_PRODUCTS: Product[] = [
   { id: 1, normalizedName: 'Молоко 3.2% 1л', category: 'Молочные', unit: 'л' },
   { id: 2, normalizedName: 'Хлеб белый нарезной', category: 'Хлеб', unit: 'шт' },
   { id: 3, normalizedName: 'Яйца куриные С1 10шт', category: 'Яйца', unit: 'уп' },
@@ -45,10 +122,7 @@ export const PRODUCTS: Product[] = [
   { id: 30, normalizedName: 'Батон нарезной', category: 'Хлеб', unit: 'шт' },
 ];
 
-// --- Mock price data ---
-// Realistic prices in rubles — vary by store with discount stores being cheaper
 const PRICE_MATRIX: Record<number, Record<number, number>> = {
-  // productId -> { storeId -> price }
   1:  { 1: 79.90, 2: 82.50, 3: 74.90, 4: 89.90, 5: 94.90 },
   2:  { 1: 42.90, 2: 39.90, 3: 44.90, 4: 49.90, 5: 59.90 },
   3:  { 1: 109.90, 2: 104.90, 3: 99.90, 4: 119.90, 5: 129.90 },
@@ -81,38 +155,48 @@ const PRICE_MATRIX: Record<number, Record<number, number>> = {
   30: { 1: 39.90, 2: 44.90, 3: 37.90, 4: 46.90, 5: 54.90 },
 };
 
-// --- API functions ---
-
-export async function searchProducts(query: string, limit = 10): Promise<Product[]> {
-  // Simulate API delay
-  await new Promise(r => setTimeout(r, 150));
+async function mockSearchProducts(query: string, limit = 10): Promise<Product[]> {
+  await new Promise((r) => setTimeout(r, 150));
   const q = query.toLowerCase();
-  return PRODUCTS
-    .filter(p => p.normalizedName.toLowerCase().includes(q))
-    .slice(0, limit);
+  return MOCK_PRODUCTS.filter((p) => p.normalizedName.toLowerCase().includes(q)).slice(0, limit);
 }
 
-export async function fetchPrices(productIds: number[]): Promise<ProductPrices[]> {
-  await new Promise(r => setTimeout(r, 200));
-  return productIds.map(pid => {
-    const product = PRODUCTS.find(p => p.id === pid);
+async function mockFetchPrices(productIds: number[]): Promise<ProductPrices[]> {
+  await new Promise((r) => setTimeout(r, 200));
+  return productIds.map((pid) => {
+    const product = MOCK_PRODUCTS.find((p) => p.id === pid);
     const storePrices = PRICE_MATRIX[pid] || {};
     return {
       productId: pid,
       name: product?.normalizedName || 'Неизвестный продукт',
-      prices: STORES.map(store => ({
+      prices: MOCK_STORES.map((store) => ({
         productId: pid,
         storeId: store.id,
         storeName: store.name,
         price: storePrices[store.id] ?? -1,
         pricePerUnit: storePrices[store.id] ?? -1,
         scrapedAt: new Date().toISOString(),
-      })).filter(p => p.price > 0),
+      })).filter((p) => p.price > 0),
     };
   });
 }
 
-export async function fetchStores(): Promise<Store[]> {
-  await new Promise(r => setTimeout(r, 50));
-  return STORES;
+async function mockFetchStores(): Promise<Store[]> {
+  await new Promise((r) => setTimeout(r, 50));
+  return MOCK_STORES;
 }
+
+// ─── Public API (delegates based on VITE_API_URL) ────────────────────────────
+
+export const STORES = MOCK_STORES;
+export const PRODUCTS = MOCK_PRODUCTS;
+
+export const searchProducts: (query: string, limit?: number) => Promise<Product[]> = API_URL
+  ? apiSearchProducts
+  : mockSearchProducts;
+
+export const fetchPrices: (productIds: number[]) => Promise<ProductPrices[]> = API_URL
+  ? apiFetchPrices
+  : mockFetchPrices;
+
+export const fetchStores: () => Promise<Store[]> = API_URL ? apiFetchStores : mockFetchStores;
