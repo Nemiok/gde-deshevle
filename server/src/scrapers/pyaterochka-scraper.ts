@@ -82,7 +82,7 @@ export class PyaterochkaScraper extends BaseScraper {
     let url: string | null = `${this.apiBase}/?records_per_page=50&categories=${slug}&store=&format=json`;
 
     while (url) {
-      const { data } = await axios.get<PyatApiResponse>(url, {
+      const { data }: { data: PyatApiResponse } = await axios.get<PyatApiResponse>(url, {
         headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' },
         timeout: 10_000,
       });
