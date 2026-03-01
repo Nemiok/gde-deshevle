@@ -1,0 +1,45 @@
+services:
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.railway
+    restart: on-failure
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgresql://gdedeshevle:gdedeshevle@postgres:5432/gdedeshevle
+      REDIS_URL: redis://redis:6379
+      PORT: "3001"
+      NODE_ENV: production
+      CORS_ORIGIN: "*"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    restart: on-failure
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: gdedeshevle
+      POSTGRES_PASSWORD: gdedeshevle
+      POSTGRES_DB: gdedeshevle
+    healthcheck:
+      test: pg_isready -U gdedeshevle -d gdedeshevle
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: on-failure
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:

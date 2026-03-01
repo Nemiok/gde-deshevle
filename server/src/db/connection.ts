@@ -4,6 +4,15 @@ import { config } from '../config.js';
 const { Pool } = pg;
 
 /**
+ * Detect whether the DATABASE_URL requires SSL (e.g. Neon, Supabase, etc.).
+ * If the connection string includes `sslmode=require` or we're in production,
+ * enable SSL on the pg Pool.
+ */
+const needsSsl =
+  config.databaseUrl.includes('sslmode=require') ||
+  config.databaseUrl.includes('.neon.tech');
+
+/**
  * Shared PostgreSQL connection pool.
  *
  * max: 10 connections — enough for typical API workloads.
@@ -15,6 +24,7 @@ export const pool = new Pool({
   max: 10,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
+  ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
 });
 
 /** Emitted when a new client is created — useful for debugging pool growth */
