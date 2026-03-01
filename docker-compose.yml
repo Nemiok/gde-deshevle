@@ -21,8 +21,6 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: on-failure
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
     environment:
       POSTGRES_USER: gdedeshevle
       POSTGRES_PASSWORD: gdedeshevle
@@ -37,9 +35,3 @@ services:
   redis:
     image: redis:7-alpine
     restart: on-failure
-    volumes:
-      - redis_data:/data
-
-volumes:
-  postgres_data:
-  redis_data:
