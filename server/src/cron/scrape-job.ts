@@ -198,12 +198,14 @@ export function startScrapeJob(): void {
 
 /**
  * Trigger a one-shot scrape run immediately (useful for testing / manual refresh).
+ * Pass specific store slugs to scrape only those stores.
  */
-export async function runScrapeNow(): Promise<ScrapeRunStats[]> {
-  console.info(`[CronJob] Manual scrape triggered — ${new Date().toISOString()}`);
+export async function runScrapeNow(stores?: StoreSlug[]): Promise<ScrapeRunStats[]> {
+  const slugsToScrape = stores && stores.length > 0 ? stores : STORE_SLUGS;
+  console.info(`[CronJob] Manual scrape triggered — ${new Date().toISOString()} — stores: ${slugsToScrape.join(', ')}`);
   const allStats: ScrapeRunStats[] = [];
 
-  for (const slug of STORE_SLUGS) {
+  for (const slug of slugsToScrape) {
     const stats = await runStoreScape(slug);
     allStats.push(stats);
   }

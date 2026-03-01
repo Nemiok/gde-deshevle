@@ -1,187 +1,219 @@
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 import { BaseScraper, ScrapedProduct } from './base-scraper';
 
 /**
- * Magnit (magnit.ru) scraper.
+ * Magnit (magnit.ru / web-gateway.middle-api.magnit.ru) scraper.
  *
- * Magnit exposes a reasonably stable REST API for their online store.
- * We use it directly; fall back to Playwright if the API is unavailable.
+ * Uses the verified Magnit web-gateway API:
+ * POST https://web-gateway.middle-api.magnit.ru/v3/goods
  *
- * TODO: Verify API paths and field names against live magnit.ru before deploying.
+ * Scrapes SPb store (storeCode 543358) across all food categories.
+ * Paginates through every category (36 items per page) until exhausted.
  */
 
-interface MagnitApiProduct {
+// ── API response shapes ───────────────────────────────────────────────────────
+
+interface MagnitGoodImage {
+  url: string;
+  type?: string;
+}
+
+interface MagnitGood {
   id: number | string;
   name: string;
+  price?: number;            // kopecks or rubles — check actual response
+  oldPrice?: number;
+  pricePerKg?: number | null;
+  pricePerUnit?: number | null;
+  categoryId?: number | string;
+  categoryName?: string;
+  images?: MagnitGoodImage[];
+  slug?: string;
   url?: string;
-  mainImage?: string;
-  price?: {
-    retailPrice?: number;
-    promotionPrice?: number;
-    pricePerKg?: number;
-    unitOfMeasure?: string;
-  };
-  category?: {
-    name?: string;
-  };
+}
+
+interface MagnitPagination {
+  total: number;
+  number: number;
+  size: number;
 }
 
 interface MagnitApiResponse {
-  items?: MagnitApiProduct[];
-  total?: number;
-  hasMore?: boolean;
+  goods?: MagnitGood[];
+  pagination?: MagnitPagination;
 }
+
+// ── Category mapping ──────────────────────────────────────────────────────────
+
+// These category IDs cover the main food groups in Magnit's catalog.
+// IDs sourced from verified API research.
+const MAGNIT_CATEGORY_IDS: number[] = [
+  4893, // Молочные продукты
+  4887, // Хлеб и выпечка
+  4894, // Яйца
+  4886, // Бакалея
+  4885, // Фрукты и овощи
+  4889, // Мясо и птица
+  4890, // Рыба и морепродукты
+  4891, // Напитки
+  4892, // Заморожка / Кондитерские
+];
+
+const MAGNIT_HEADERS = {
+  'x-device-id': 'nk1kmh32na',
+  'x-device-tag': 'disabled',
+  'x-app-version': '0.1.0',
+  'x-device-platform': 'Web',
+  'x-client-name': 'magnit',
+  'x-platform-version':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'user-agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'accept': '*/*',
+  'accept-language': 'ru-RU,ru;q=0.9',
+  'content-type': 'application/json',
+  'origin': 'https://magnit.ru',
+  'referer': 'https://magnit.ru/',
+};
+
+const MAGNIT_API_URL = 'https://web-gateway.middle-api.magnit.ru/v3/goods';
+const SPB_STORE_CODE = '543358'; // Magnit store in Saint Petersburg
+const PAGE_SIZE = 36;
+const REQUEST_TIMEOUT = 15_000;
 
 export class MagnitScraper extends BaseScraper {
   readonly storeName = 'Magnit';
   readonly storeSlug = 'magnit';
   readonly baseUrl = 'https://magnit.ru';
 
-  // TODO: confirm API base path on live magnit.ru
-  private readonly apiBase = 'https://magnit.ru/webapi/v1/goods/list';
-
-  // Category codes used by Magnit's internal API (TODO: verify)
-  private readonly categories: Record<string, string> = {
-    'molochnye-produkty': 'Молочные продукты',
-    'hleb-vypechka': 'Хлеб и выпечка',
-    'frukty-ovoshchi': 'Фрукты и овощи',
-    'myaso-ptica': 'Мясо и птица',
-    'ryba-moreprodukty': 'Рыба и морепродукты',
-    'napitki': 'Напитки',
-    'zamorozhenye-produkty': 'Замороженные продукты',
-    'bakaleya': 'Бакалея',
-    'yajca': 'Яйца',
-    'konditerskiye-izdeliya': 'Кондитерские изделия',
-  };
-
-  async getCategoryUrls(): Promise<string[]> {
-    return Object.keys(this.categories).map(
-      (slug) => `${this.baseUrl}/magnit-market/catalog/${slug}/`,
-    );
-  }
-
-  async scrapeCategory(categoryUrl: string): Promise<ScrapedProduct[]> {
-    const slug = categoryUrl
-      .replace(`${this.baseUrl}/magnit-market/catalog/`, '')
-      .replace(/\/$/, '');
-    const category = this.categories[slug] ?? slug;
-
+  async scrapeProducts(): Promise<ScrapedProduct[]> {
     return this.withRetry(async () => {
-      try {
-        const products = await this.scrapeViaApi(slug, category);
-        if (products.length > 0) return products;
-      } catch (err) {
-        console.warn(`[${this.storeName}] API failed for ${slug}:`, err);
+      const allProducts: ScrapedProduct[] = [];
+
+      for (const categoryId of MAGNIT_CATEGORY_IDS) {
+        try {
+          const products = await this.scrapeCategoryById(categoryId);
+          console.log(
+            `[Magnit] Category ${categoryId} — ${products.length} products`,
+          );
+          allProducts.push(...products);
+        } catch (err) {
+          console.error(`[Magnit] Failed to scrape category ${categoryId}:`, err instanceof Error ? err.message : err);
+        }
+        await this.delay(1000, 2000);
       }
-      return this.scrapeViaPage(categoryUrl, category);
+
+      console.log(`[Magnit] Total products scraped: ${allProducts.length}`);
+      return allProducts;
     });
   }
 
-  private async scrapeViaApi(
-    slug: string,
-    category: string,
-  ): Promise<ScrapedProduct[]> {
+  private async scrapeCategoryById(categoryId: number): Promise<ScrapedProduct[]> {
     const products: ScrapedProduct[] = [];
-    let offset = 0;
-    const limit = 50;
+    let pageNumber = 1;
+    let totalPages = 1;
 
-    while (true) {
-      const { data } = await axios.get<MagnitApiResponse>(this.apiBase, {
-        params: {
-          // TODO: verify param names against live API
-          category: slug,
-          offset,
-          limit,
-          cityId: '77', // Saint Petersburg region
-        },
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          Referer: `${this.baseUrl}/`,
-        },
-        timeout: 10_000,
-      });
+    do {
+      const body = {
+        categoryIDs: [categoryId],
+        includeForAdults: true,
+        onlyDiscount: false,
+        order: 'desc',
+        pagination: { number: pageNumber, size: PAGE_SIZE },
+        shopType: '1',
+        sortBy: 'popularity',
+        storeCodes: [SPB_STORE_CODE],
+      };
 
-      const items = data.items ?? [];
-      if (items.length === 0) break;
+      let data: MagnitApiResponse;
+      try {
+        const response = await axios.post<MagnitApiResponse>(
+          MAGNIT_API_URL,
+          body,
+          {
+            headers: MAGNIT_HEADERS,
+            timeout: REQUEST_TIMEOUT,
+          },
+        );
 
-      for (const item of items) {
-        const priceRaw = item.price?.promotionPrice ?? item.price?.retailPrice;
-        if (!priceRaw) continue;
+        // Detect WAF/HTML block
+        if (typeof response.data === 'string' && this.isHtmlResponse(response.data)) {
+          console.error(`[Magnit] Got HTML instead of JSON for category ${categoryId} page ${pageNumber} — likely blocked`);
+          break;
+        }
 
-        const pricePerUnit = item.price?.pricePerKg ?? null;
+        data = response.data;
+      } catch (err) {
+        const axiosErr = err as AxiosError;
+        console.error(
+          `[Magnit] HTTP error for category ${categoryId} page ${pageNumber}: ` +
+          `${axiosErr.response?.status ?? 'network error'} — ${axiosErr.message}`,
+        );
+        break;
+      }
+
+      const goods = data.goods ?? [];
+      console.log(`[Magnit] Category ${categoryId} page ${pageNumber}: ${goods.length} items`);
+
+      if (goods.length === 0) break;
+
+      for (const item of goods) {
+        if (!item.name) continue;
+
+        // Price can be in rubles or kopecks depending on API version.
+        // The verified v3 API returns rubles as floats.
+        const rawPrice = item.price;
+        if (!rawPrice || rawPrice <= 0) continue;
+
+        // Prices above 50000 are likely kopecks — convert
+        const price = rawPrice > 50000 ? rawPrice / 100 : rawPrice;
+
+        const rawPpu = item.pricePerKg ?? item.pricePerUnit ?? null;
+        const pricePerUnit = rawPpu
+          ? rawPpu > 50000 ? rawPpu / 100 : rawPpu
+          : null;
+
+        const categoryName = item.categoryName ?? String(categoryId);
+        const category = this.mapCategory(categoryName);
+
+        // Build product URL
+        const productSlug = item.slug ?? String(item.id);
+        const url = item.url
+          ? (item.url.startsWith('http') ? item.url : `${this.baseUrl}${item.url}`)
+          : `${this.baseUrl}/magnit-market/p/${productSlug}/`;
+
+        // Pick first image
+        const imageUrl = item.images && item.images.length > 0
+          ? item.images[0].url
+          : undefined;
 
         products.push({
           storeProductName: item.name,
-          price: priceRaw,
+          price,
           pricePerUnit,
           category,
-          url: item.url
-            ? item.url.startsWith('http') ? item.url : `${this.baseUrl}${item.url}`
-            : this.baseUrl,
-          imageUrl: item.mainImage,
+          url,
+          imageUrl,
         });
       }
 
-      if (!data.hasMore) break;
-      offset += limit;
-      await this.delay(500, 1200);
-    }
-
-    return products;
-  }
-
-  private async scrapeViaPage(
-    categoryUrl: string,
-    category: string,
-  ): Promise<ScrapedProduct[]> {
-    const browser = await this.createBrowser();
-    const context = await this.createContext(browser);
-    const products: ScrapedProduct[] = [];
-
-    try {
-      const page = await this.openPage(context, categoryUrl);
-
-      // TODO: verify selectors against live magnit.ru
-      const cardSelector = '[class*="product-card"], .goods-card';
-      await page.waitForSelector(cardSelector, { timeout: 15_000 }).catch(() => null);
-
-      const cards = await page.$$(cardSelector);
-
-      for (const card of cards) {
-        try {
-          const nameEl = await card.$('[class*="goods-name"], [class*="product-name"], h3');
-          const name = (await nameEl?.textContent())?.trim() ?? '';
-          if (!name) continue;
-
-          const priceEl = await card.$('[class*="price"], [class*="Price"]');
-          const priceRaw = (await priceEl?.textContent())?.trim() ?? '';
-          const price = this.parsePrice(priceRaw);
-          if (isNaN(price) || price <= 0) continue;
-
-          const linkEl = await card.$('a');
-          const href = (await linkEl?.getAttribute('href')) ?? '';
-          const productUrl = href.startsWith('http') ? href : `${this.baseUrl}${href}`;
-
-          const imgEl = await card.$('img');
-          const imageUrl = (await imgEl?.getAttribute('src')) ?? undefined;
-
-          products.push({
-            storeProductName: name,
-            price,
-            pricePerUnit: null,
-            category,
-            url: productUrl,
-            imageUrl,
-          });
-        } catch {
-          // skip
-        }
+      // Calculate total pages from pagination info
+      if (data.pagination) {
+        const { total, size } = data.pagination;
+        totalPages = Math.ceil(total / size);
+        console.log(
+          `[Magnit] Category ${categoryId}: page ${pageNumber}/${totalPages} (total items: ${total})`,
+        );
+      } else {
+        // No pagination info — stop after first page
+        break;
       }
-    } finally {
-      await context.close();
-      await browser.close();
-    }
+
+      pageNumber++;
+      if (pageNumber <= totalPages) {
+        await this.delay(800, 1500);
+      }
+    } while (pageNumber <= totalPages);
 
     return products;
   }

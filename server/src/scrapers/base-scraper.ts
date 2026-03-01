@@ -1,4 +1,10 @@
-import { chromium, Browser, BrowserContext, Page } from 'playwright';
+/**
+ * Base scraper — HTTP-only (axios). No Playwright/browser dependencies.
+ * All concrete scrapers must extend BaseScraper and implement scrapeProducts().
+ *
+ * Playwright import is kept as a lazy/optional reference so it won't crash
+ * at runtime in the node:20-slim Docker image where it is not installed.
+ */
 
 // ─── Shared Types ─────────────────────────────────────────────────────────────
 
@@ -6,109 +12,44 @@ export interface ScrapedProduct {
   storeProductName: string;   // Raw name from the store website
   price: number;               // Price in rubles
   pricePerUnit: number | null; // Price per kg/liter if available
-  category: string;            // Category from the store
+  category: string;            // Category from the store (mapped to canonical)
   url: string;                 // Product page URL
   imageUrl?: string;           // Product image URL
 }
 
-// ─── Abstract Base Scraper ───────────────────────────────────────────────────
+// ─── Abstract Base Scraper ────────────────────────────────────────────────────
 
 export abstract class BaseScraper {
   abstract readonly storeName: string;
   abstract readonly storeSlug: string;
   abstract readonly baseUrl: string;
 
-  // Subclasses implement: scrape a single category page
-  abstract scrapeCategory(categoryUrl: string): Promise<ScrapedProduct[]>;
+  /**
+   * Subclasses implement this: fetch all products via HTTP and return them.
+   */
+  abstract scrapeProducts(): Promise<ScrapedProduct[]>;
 
-  // Subclasses implement: return all category URLs to scrape
-  abstract getCategoryUrls(): Promise<string[]>;
-
-  // ── Full scrape orchestrator ──────────────────────────────────────────────
-
+  /**
+   * Full scrape orchestrator — calls scrapeProducts() with error handling.
+   * This is the entry point used by the cron job and manual triggers.
+   */
   async scrapeAll(): Promise<ScrapedProduct[]> {
-    const allProducts: ScrapedProduct[] = [];
-
-    let categoryUrls: string[];
+    console.log(`[${this.storeName}] Starting scrape...`);
     try {
-      categoryUrls = await this.getCategoryUrls();
+      const products = await this.scrapeProducts();
+      console.log(`[${this.storeName}] Scrape complete — ${products.length} products found.`);
+      return products;
     } catch (err) {
-      console.error(`[${this.storeName}] Failed to retrieve category URLs:`, err);
-      return allProducts;
+      console.error(`[${this.storeName}] scrapeAll failed:`, err);
+      return [];
     }
-
-    for (const url of categoryUrls) {
-      try {
-        await this.delay();
-        const products = await this.scrapeCategory(url);
-        console.log(
-          `Scraping ${this.storeName} category: ${url} — found ${products.length} products`,
-        );
-        allProducts.push(...products);
-      } catch (err) {
-        console.error(`[${this.storeName}] Error scraping category ${url}:`, err);
-        // Continue to next category rather than aborting the whole run
-      }
-    }
-
-    return allProducts;
-  }
-
-  // ── Browser factory ──────────────────────────────────────────────────────
-
-  protected async createBrowser(): Promise<Browser> {
-    const browser = await chromium.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
-        '--window-size=375,812',
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process',
-      ],
-    });
-    return browser;
-  }
-
-  // Create a browser context with anti-detection settings
-  protected async createContext(browser: Browser): Promise<BrowserContext> {
-    const context = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-      viewport: { width: 375, height: 812 },
-      locale: 'ru-RU',
-      timezoneId: 'Europe/Moscow',
-      extraHTTPHeaders: {
-        'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-        Accept:
-          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-      },
-    });
-
-    // Mask webdriver flag
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => false });
-      // @ts-ignore
-      delete navigator.__proto__.webdriver;
-    });
-
-    return context;
-  }
-
-  // Open a new page with context and navigate
-  protected async openPage(context: BrowserContext, url: string): Promise<Page> {
-    const page = await context.newPage();
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
-    return page;
   }
 
   // ── Utility helpers ───────────────────────────────────────────────────────
 
   /**
-   * Random delay between requests (default 1–3 seconds).
-   * Pass explicit min/max in milliseconds if needed.
+   * Random delay between requests.
+   * Default 1–3 seconds; pass explicit min/max in ms if needed.
    */
   protected async delay(min = 1000, max = 3000): Promise<void> {
     const ms = Math.floor(Math.random() * (max - min + 1)) + min;
@@ -132,7 +73,7 @@ export abstract class BaseScraper {
           const backoffMs = Math.pow(2, attempt + 1) * 1000; // 2s, 4s, 8s
           console.warn(
             `[${this.storeName}] Attempt ${attempt + 1} failed. Retrying in ${backoffMs / 1000}s…`,
-            err,
+            err instanceof Error ? err.message : err,
           );
           await new Promise((resolve) => setTimeout(resolve, backoffMs));
         }
@@ -143,18 +84,19 @@ export abstract class BaseScraper {
 
   /**
    * Parse a Russian price string like "89,90 ₽" or "1 099 ₽" into a float.
+   * Also handles plain numeric values (already numbers).
    * Returns NaN if unparseable.
    */
-  protected parsePrice(raw: string): number {
-    // Remove currency symbol, non-breaking spaces and regular spaces used as thousands separators
+  protected parsePrice(raw: string | number): number {
+    if (typeof raw === 'number') return raw;
+    // Remove currency symbol, non-breaking spaces, regular spaces used as thousands separators
     const cleaned = raw
       .replace(/[₽\s\u00A0]/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
-      // Replace comma decimal separator
-      .replace(',', '.');
+      .replace(',', '.'); // Russian decimal comma → dot
 
-    // "89.90" or "1 099.00" → remove remaining spaces (thousands sep)
+    // Remove remaining spaces (thousands separator)
     const normalized = cleaned.replace(/\s/g, '');
     return parseFloat(normalized);
   }
@@ -167,5 +109,33 @@ export abstract class BaseScraper {
     if (!raw) return null;
     const price = this.parsePrice(raw);
     return isNaN(price) ? null : price;
+  }
+
+  /**
+   * Detect if a response body is HTML instead of JSON (bot protection / WAF).
+   * Returns true if the string looks like an HTML page.
+   */
+  protected isHtmlResponse(body: unknown): boolean {
+    if (typeof body !== 'string') return false;
+    const trimmed = body.trimStart();
+    return trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html');
+  }
+
+  /**
+   * Map a store category string to our canonical category slugs.
+   */
+  protected mapCategory(storeCategory: string): string {
+    const lower = storeCategory.toLowerCase();
+    if (/молоч|dairy|кефир|творог|сметан|сыр|йогурт|ряженк|масло.*(слив|сметан)/i.test(lower)) return 'dairy';
+    if (/хлеб|выпечк|батон|bread|bakery/i.test(lower)) return 'bread';
+    if (/яйц|egg/i.test(lower)) return 'eggs';
+    if (/бакал|крупа|макарон|сахар|соль|мука|масло.*(подсолн|олив)|крупы/i.test(lower)) return 'bakaleya';
+    if (/фрукт|овощ|fruit|vegetab|картоф|морков|помидор|огурц|лук|капуст|яблок|банан/i.test(lower)) return 'fruits-vegetables';
+    if (/мясо|птиц|курица|свинина|говядин|фарш|meat|poultry|колбас|сосис/i.test(lower)) return 'meat-poultry';
+    if (/рыба|морепрод|сёмга|минтай|сельдь|fish|seafood/i.test(lower)) return 'fish-seafood';
+    if (/напитк|вода|сок|кофе|чай|drink|beverage/i.test(lower)) return 'drinks';
+    if (/заморож|frozen|пельмен|мороженое/i.test(lower)) return 'frozen';
+    if (/кондитер|шоколад|печенье|confect|сладк|снек/i.test(lower)) return 'confectionery';
+    return storeCategory; // return as-is if no mapping found
   }
 }

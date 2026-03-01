@@ -23,6 +23,7 @@ import productsRouter from './routes/products.js';
 import pricesRouter from './routes/prices.js';
 import storesRouter from './routes/stores.js';
 import { pool } from './db/connection.js';
+import { runScrapeNow } from './cron/scrape-job.js';
 
 const app = express();
 
@@ -35,7 +36,7 @@ app.use(express.json());
 app.use(
   cors({
     origin: config.corsOrigin,
-    methods: ['GET', 'OPTIONS'],
+    methods: ['GET', 'POST', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   }),
 );
@@ -73,6 +74,59 @@ app.use('/api/prices', pricesRouter);
 
 /** Store listings */
 app.use('/api/stores', storesRouter);
+
+/** Manual scrape trigger — POST /api/scrape to run all scrapers immediately */
+app.post('/api/scrape', async (_req: Request, res: Response): Promise<void> => {
+  console.info('[API] Manual scrape triggered');
+  try {
+    const stats = await runScrapeNow();
+    const totals = stats.reduce(
+      (acc, s) => ({
+        totalScraped: acc.totalScraped + s.totalScraped,
+        matched: acc.matched + s.matched,
+        inserted: acc.inserted + s.inserted,
+        errors: acc.errors + s.errors,
+      }),
+      { totalScraped: 0, matched: 0, inserted: 0, errors: 0 },
+    );
+    res.json({
+      status: 'ok',
+      summary: totals,
+      stores: stats,
+    });
+  } catch (err) {
+    console.error('[API] Scrape failed:', err);
+    res.status(500).json({
+      status: 'error',
+      message: err instanceof Error ? err.message : 'Unknown error',
+    });
+  }
+});
+
+/** GET /api/scrape/:store — run a single store scraper */
+app.post('/api/scrape/:store', async (req: Request, res: Response): Promise<void> => {
+  const store = req.params.store;
+  console.info(`[API] Manual scrape triggered for store: ${store}`);
+  try {
+    const { STORE_SLUGS } = await import('./scrapers/index.js');
+    if (!STORE_SLUGS.includes(store as any)) {
+      res.status(400).json({ error: `Unknown store: ${store}. Available: ${STORE_SLUGS.join(', ')}` });
+      return;
+    }
+    const stats = await runScrapeNow([store as any]);
+    res.json({
+      status: 'ok',
+      store,
+      stats: stats[0] ?? null,
+    });
+  } catch (err) {
+    console.error(`[API] Scrape for ${store} failed:`, err);
+    res.status(500).json({
+      status: 'error',
+      message: err instanceof Error ? err.message : 'Unknown error',
+    });
+  }
+});
 
 /** 404 catch-all — any unmatched route */
 app.use((_req: Request, res: Response): void => {
